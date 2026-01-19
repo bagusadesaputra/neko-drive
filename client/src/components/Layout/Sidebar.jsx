@@ -19,8 +19,8 @@ const Sidebar = ({ stats, view, setView, onSettingsClick }) => {
             <Cloud size={20} strokeWidth={2.5} />
           </div>
           <div>
-            <h1 className="text-lg font-bold text-ctp-text leading-tight">neko drive</h1>
-            <p className="text-[9px] text-ctp-subtext0/50 font-black tracking-widest uppercase">Cloud Storage</p>
+            <h1 className="text-lg font-bold text-ctp-text leading-tight">LS Cloud</h1>
+            <p className="text-[9px] text-ctp-subtext0/50 font-black tracking-widest uppercase">Store simply. Access anytime.</p>
           </div>
         </div>
       </div>
