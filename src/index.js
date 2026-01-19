@@ -14,7 +14,8 @@ const REQUIRED_ENV = [
   "DISCORD_CHANNEL_ID",
   "SUPABASE_URL",
   "SUPABASE_KEY",
-  "ENCRYPTION_KEY"
+  "ENCRYPTION_KEY",
+  "APP_PASSWORD" // ✅ tambahkan APP_PASSWORD
 ];
 
 const missing = REQUIRED_ENV.filter(k => !process.env[k]);
@@ -28,12 +29,11 @@ const crypto = require("crypto");
 const app = express();
 
 // --- Proxy Trust (Crucial for Vercel Rate Limiting) ---
-// See: https://express-rate-limit.github.io/ERR_ERL_UNEXPECTED_X_FORWARDED_FOR/
 if (process.env.NODE_ENV === "production") {
   app.set("trust proxy", 1);
 }
 
-// --- Tracing & Logging Middleware (Multi-User Optimization) ---
+// --- Tracing & Logging Middleware ---
 app.use((req, res, next) => {
   req.id = crypto.randomBytes(4).toString("hex"); // Short unique ID
   logger.log(`[${req.id}] ${req.method} ${req.url}`);
@@ -41,24 +41,19 @@ app.use((req, res, next) => {
 });
 
 // --- Security & Middleware ---
-
-// 1. Helmet for security headers
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
   })
 );
 
-// 2. CORS Configuration
-// For production, you should restrict this to your actual frontend URL
 app.use(cors({
   origin: process.env.NODE_ENV === "production" ? process.env.ALLOWED_ORIGIN : "*",
   methods: ["GET", "POST", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
+  allowedHeaders: ["Content-Type", "Authorization", "x-app-password"]
 }));
 
-// 3. Global Rate Limiting (2000 requests per 15 minutes)
-// High threshold to allow multi-gigabyte files (5GB+ @ 20MB chunks is 256 reqs).
+// --- Rate Limiting ---
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 2000,
@@ -68,21 +63,38 @@ const globalLimiter = rateLimit({
 });
 app.use(globalLimiter);
 
-// 4. Stricter Limiter for Sensitive Operations (Starting/Finalizing Uploads)
 const sensitiveLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour window
-  max: 50, // max 50 sensitive ops per hour
+  windowMs: 60 * 60 * 1000,
+  max: 50,
   message: { error: "Action limit reached. Please wait before trying again." },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// 5. Body Parsing with Size Limits (Pre-prevent large payload attacks)
-app.use(express.json({ limit: "100kb" })); // Metadata only needs very small payloads
+// Body parser
+app.use(express.json({ limit: "100kb" }));
 app.use(express.urlencoded({ extended: true, limit: "100kb" }));
 
-// --- Routes ---
+// --- Password Protection Middleware (Level 1) ---
+function checkPassword(req, res, next) {
+  const pw = req.headers["x-app-password"];
+  if (!process.env.APP_PASSWORD) {
+    console.warn("[WARNING] APP_PASSWORD env variable is not set.");
+    return res.status(500).json({ error: "Server misconfiguration" });
+  }
+  if (!pw || pw !== process.env.APP_PASSWORD) {
+    return res.status(401).json({ error: "Unauthorized: Invalid password" });
+  }
+  next();
+}
 
+// Apply password middleware to all routes except `/` and `/status`
+app.use((req, res, next) => {
+  if (req.path === "/" || req.path === "/status") return next();
+  checkPassword(req, res, next);
+});
+
+// --- Routes ---
 app.get("/", (req, res) => {
   res.json({
     status: "online",
@@ -99,12 +111,11 @@ app.get("/status", (req, res) => {
   });
 });
 
-// Apply sensitive limiter to specific heavy/critical paths
+// Apply sensitive limiter to heavy paths
 app.use("/upload/finalize", sensitiveLimiter);
 app.use("/upload/cancel", sensitiveLimiter);
-app.use("/upload", uploadRoute); // /upload/chunk remains under globalLimiter only
-
-app.use("/files/folder", sensitiveLimiter); // Bulk delete is heavy
+app.use("/upload", uploadRoute);
+app.use("/files/folder", sensitiveLimiter);
 app.use("/files", filesRoute);
 app.use("/download", downloadRoute);
 
@@ -122,13 +133,10 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 const { storage } = require("./services/storage");
 
-// 1. Initial Status Check
 logger.log("[Startup] Initializing Neko Drive (Supabase Mode)...");
 
-// 2. Init Storage (Async check)
 if (process.env.NODE_ENV !== "test") {
   storage.init().then(() => {
-    // 3. Start Server
     app.listen(PORT, () => {
       logger.log(`Neko Drive backend running on http://localhost:${PORT}`);
     });
